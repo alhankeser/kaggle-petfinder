@@ -21,6 +21,8 @@ import time
 import traceback
 import warnings
 import os
+import zipfile
+import shutil
 
 # Options
 pd.set_option('display.max_columns', 100)
@@ -320,18 +322,22 @@ class Model:
         predictions = model.predict(test)
         return predictions
 
-    def save_predictions(cls, predictions, score=0):
+    def save_predictions(cls, predictions, score=0, id_col=False):
         now = str(time.time()).split('.')[0]
         df = cls.get_df('test', False, True)
         target = cls.target_col
+        if not id_col:
+            id_col = df.columns[0]
         df[target] = predictions
-        if not os.path.exists('output'):
-            os.makedirs('output')
-        if os.path.exists('output'):
-            df[[df.columns[0],
-                target]].to_csv('output/submit__' + str(int(score * 100000))
-                                + '__' + now + '.csv', index=False)
-        df[[df.columns[0], target]].to_csv('submission.csv', index=False)
+        if not os.path.exists(path + '/output'):
+            os.makedirs(path + '/output')
+        if os.path.exists(path + '/output'):
+            df[[id_col,
+                target]].to_csv(path + '/output/submit__'
+                                + str(int(score * 100000))
+                                + '__' + now +
+                                '.csv', index=False)
+        df[[id_col, target]].to_csv('submission.csv', index=False)
 
 
 class Data(Explore, Clean, Engineer, Model):
@@ -463,6 +469,7 @@ def run(d, model, parameters):
     mutate(d.fill_na)
     # mutate(d.encode_features)
     mutate(d.drop_ignore)
+    print(d.get_df('train').columns)
     score = d.cross_validate(model, parameters)
     print(score)
     model = d.fit(model, parameters)
@@ -473,15 +480,47 @@ def run(d, model, parameters):
     return (predictions, score)
 
 
-model = LogisticRegression
-parameters = {}
-cols_to_ignore = ['PassengerId']
 path = '.'
 if os.getcwd().split('/')[0] == 'kaggle':
     path = '..'
+
+zip_files = list(filter(lambda x: '.zip' in x, os.listdir(path + '/input/')))
+
+
+def unzip(file, destination=''):
+    to_unzip = path + '/input/' + file
+    destination = path + '/input/' + destination
+    with zipfile.ZipFile(to_unzip, 'r') as zip_ref:
+        zip_ref.extractall(destination)
+
+
+def move_zips(move_from, move_to):
+    zip_files = list(filter(lambda x: '.zip' in x, os.listdir(move_from)))
+    if not os.path.exists(move_to):
+        os.makedirs(move_to)
+    for file in zip_files:
+        shutil.move(move_from + file, move_to + file)
+
+
+if len(zip_files) > 0:
+    unzip('train.zip')
+    unzip('test.zip')
+    unzip('train_sentiment.zip', 'train_sentiment')
+    unzip('test_sentiment.zip', 'test_sentiment')
+    unzip('train_metadata.zip', 'train_metadata')
+    unzip('test_metadata.zip', 'test_metadata')
+    unzip('train_images.zip', 'train_images')
+    unzip('test_images.zip', 'test_images')
+    move_zips(path + '/input/', path + '/input/source_zips/')
+
+model = LogisticRegression
+parameters = {}
+cols_to_ignore = ['PetID', 'RescuerID', 'Description', 'Name']
+id_col = 'PetID'
+
 d = Data(path + '/input/train.csv',
          path + '/input/test.csv',
-         'Survived',
+         'AdoptionSpeed',
          ignore=cols_to_ignore)
 predictions, score = run(d, model, parameters)
-d.save_predictions(predictions, score)
+d.save_predictions(predictions, score, id_col)
