@@ -218,6 +218,35 @@ class Clean:
 
 class Engineer:
 
+    def color(cls, df):
+        df.loc[(df['Color3'] > 0) | (df['Color2'] > 0),
+               'Mixed_Color'] = True
+        df.loc[(df['Color3'] == 0) | (df['Color2'] == 0),
+               'Mixed_Color'] = False
+        return df
+
+    def simplify_quantity(cls, df):
+        bins = (0, 1, 10, 100)
+        group_names = ['solo', 'litter', 'herd']
+        categories = pd.cut(df['Quantity'], bins, labels=group_names)
+        return categories
+
+    def quantity(cls, df):
+        df['QuantityGroup'] = cls.simplify_quantity(df)
+        return df
+
+    def gender(cls, df):
+        df.loc[(df['Gender'] == 3) &
+               (df['Quantity'] == 2), 'Gender'] = 1.5
+        df.loc[(df['Gender'] == 3) &
+               (df['Quantity'] > 2), 'Gender'] = 0
+        return df
+
+    def breed(cls, df):
+        df.loc[df['Breed2'] > 0, 'Mixed_Breed'] = True
+        df.loc[df['Breed2'] == 0, 'Mixed_Breed'] = False
+        return df
+
     def encode_features(cls, df, cols):
         train, test = cls.get_dfs()
         df_combined = pd.concat([train[cols], test[cols]])
@@ -230,14 +259,23 @@ class Engineer:
             df[feature] = le.transform(df[feature])
         return df
 
-    def simplify_feature(cls, df):
-        # Example setup for such a function:
-        df['Age'] = df['Age'].fillna(-0.5)
-        bins = (-1, 0, 5, 12, 18, 25, 35, 60, 120)
-        group_names = ['Unknown', 'Baby', 'Child', 'Teenager', 'Student',
-                       'Young Adult', 'Adult', 'Senior']
-        categories = pd.cut(df['Age'], bins, labels=group_names)
-        df['Age'] = categories
+    def simplify_ages(cls, df, animal):
+        if animal == 'dog':
+            bins = (-1, 0, 2, 256)
+            group_names = ['baby', 'child', 'adult']
+            categories = pd.cut(df[df['Type'] == 1]['Age'], bins,
+                                labels=group_names)
+        if animal == 'cat':
+            bins = (-1, 4, 256)
+            group_names = ['baby', 'adult']
+            categories = pd.cut(df[df['Type'] == 2]['Age'], bins,
+                                labels=group_names)
+        return categories
+
+    def age(cls, df):
+        df.loc[df['Type'] == 1, 'AgeGroup'] = cls.simplify_ages(df, 'dog')
+        df.loc[df['Type'] == 2, 'AgeGroup'] = cls.simplify_ages(df, 'cat')
+        df.drop('Age', axis=1, inplace=True)
         return df
 
     def sum_features(cls, df, col_sum):
@@ -295,7 +333,7 @@ class Model:
             cls.mutate(cls.fix_shape)
             train = cls.get_df('train')
         scores = np.array([])
-        skf = StratifiedKFold(n_splits=10, random_state=None)
+        skf = StratifiedKFold(n_splits=10, random_state=101)
         X = train.drop(columns=[cls.target_col])
         y = train[cls.target_col]
         for train_index, test_index in skf.split(X, y):
@@ -463,11 +501,27 @@ class Data(Explore, Clean, Engineer, Model):
 
 def run(d, model, parameters):
     mutate = d.mutate
+
+    mutate(d.age)
+    mutate(d.gender)
+    mutate(d.quantity)
+    # mutate(d.color)
+    # mutate(d.breed)
     # mutate(d.sum_features, d.col_sum)
-    # mutate(d.combine, d.col_sum)
+    mutate(d.combine, [
+        # ['Breed1', 'Breed2'],
+        # ['Color1', 'Color2', 'Color3']
+        ])
     # mutate(d.keep_only_keep)
-    mutate(d.fill_na)
-    # mutate(d.encode_features)
+    # mutate(d.fill_na)
+    mutate(d.encode_features, [
+        # 'RescuerID',
+        # 'Name',
+        # 'Color1__Color2__Color3'
+        ])
+    mutate(d.encode_categorical, ['Type', 'AgeGroup',
+                                  'Gender', 'QuantityGroup',
+                                  'MaturitySize', 'FurLength'])
     mutate(d.drop_ignore)
     print(d.get_df('train').columns)
     score = d.cross_validate(model, parameters)
@@ -476,20 +530,20 @@ def run(d, model, parameters):
     predictions = d.predict(model)
     d.print_log()
     train = d.get_df('train')
-    print(train.columns.values)
+    print(train.head(2))
     return (predictions, score)
 
 
 path = '.'
-if os.getcwd().split('/')[0] == 'kaggle':
+if os.getcwd().split('/')[1] == 'kaggle':
     path = '..'
 
 zip_files = list(filter(lambda x: '.zip' in x, os.listdir(path + '/input/')))
 
 
-def unzip(file, destination=''):
+def unzip(file):
     to_unzip = path + '/input/' + file
-    destination = path + '/input/' + destination
+    destination = path + '/input/' + file.split('.')[0]
     with zipfile.ZipFile(to_unzip, 'r') as zip_ref:
         zip_ref.extractall(destination)
 
@@ -503,24 +557,42 @@ def move_zips(move_from, move_to):
 
 
 if len(zip_files) > 0:
-    unzip('train.zip')
-    unzip('test.zip')
-    unzip('train_sentiment.zip', 'train_sentiment')
-    unzip('test_sentiment.zip', 'test_sentiment')
-    unzip('train_metadata.zip', 'train_metadata')
-    unzip('test_metadata.zip', 'test_metadata')
-    unzip('train_images.zip', 'train_images')
-    unzip('test_images.zip', 'test_images')
+    for file in zip_files:
+        unzip(file)
     move_zips(path + '/input/', path + '/input/source_zips/')
 
 model = LogisticRegression
 parameters = {}
-cols_to_ignore = ['PetID', 'RescuerID', 'Description', 'Name']
+cols_to_ignore = ['PetID',
+                  'RescuerID',
+                  'Description',
+                  'Name',
+                #   'Type',
+                #   'Age',
+                #   'Breed1',
+                #   'Breed2',
+                #   'Gender',
+                #   'Color1',
+                #   'Color2',
+                  'Color3',
+                #   'MaturitySize',
+                #   'FurLength',
+                  'Vaccinated',
+                  'Dewormed',
+                  'Sterilized',
+                  'Health',
+                  'Quantity',
+                  'Fee',
+                  'State',
+                  'VideoAmt',
+                  'PhotoAmt'
+                  ]
 id_col = 'PetID'
 
-d = Data(path + '/input/train.csv',
-         path + '/input/test.csv',
+d = Data(path + '/input/train/train.csv',
+         path + '/input/test/test.csv',
          'AdoptionSpeed',
          ignore=cols_to_ignore)
 predictions, score = run(d, model, parameters)
 d.save_predictions(predictions, score, id_col)
+# 0.35923
