@@ -3,6 +3,8 @@ If you find this useful, please give a thumbs up!
 
 Thanks!
 - Claire & Alhan
+
+https://github.com/alhankeser/kaggle-petfinder
 '''
 
 # External libraries
@@ -217,6 +219,66 @@ class Clean:
 
 
 class Engineer:
+
+    def simplify_name_length(cls, x):
+        length = len(str(x))
+        if length < 3:
+            return 'short'
+        if length < 20:
+            return 'medium'
+        if length > 19:
+            return 'long'
+
+    def name_length(cls, df):
+        df['NameLength'] = df['Name']\
+            .apply(lambda x: cls.simplify_name_length(x))
+        return df
+
+    def get_name_groups(cls, df):
+        names = {}
+        names_by_count = df[df['Type'] == 1]['Name']\
+            .value_counts().index.tolist()
+        top5 = [a.lower() for a in names_by_count[:5]]
+        top30 = [a.lower() for a in names_by_count[:30]]
+        rest = [a.lower() for a in names_by_count[:]]
+        names['dog'] = {
+            'top5': top5,
+            'top30': top30,
+            'rest': rest
+        }
+        names_by_count = df[df['Type'] == 2]['Name']\
+            .value_counts().index.tolist()
+        top5 = [a.lower() for a in names_by_count[:5]]
+        top30 = [a.lower() for a in names_by_count[:30]]
+        rest = [a.lower() for a in names_by_count[:]]
+        names['cat'] = {
+            'top5': top5,
+            'top30': top30,
+            'rest': rest
+        }
+        return names
+
+    def simplify_names(cls, x, names):
+        x = str(x)
+        x = x.lower()
+        if 'nan' in x:
+            return 'NAN'
+        if x in names['top5']:
+            return 'top5'
+        if x in names['top30']:
+            return 'top30'
+        if '&' in x:
+            return 'and'
+        if x in names['rest']:
+            return 'rest'
+
+    def names(cls, df):
+        names = cls.get_name_groups(df)
+        df.loc[df['Type'] == 1, 'NameGroup'] = df[df['Type'] == 1]['Name']\
+            .apply(lambda x: cls.simplify_names(x, names['dog']))
+        df.loc[df['Type'] == 2, 'NameGroup'] = df[df['Type'] == 2]['Name']\
+            .apply(lambda x: cls.simplify_names(x, names['cat']))
+        return df
 
     def color(cls, df):
         df.loc[(df['Color3'] > 0) | (df['Color2'] > 0),
@@ -505,6 +567,8 @@ def run(d, model, parameters):
     mutate(d.age)
     mutate(d.gender)
     mutate(d.quantity)
+    mutate(d.names)
+    mutate(d.name_length)
     # mutate(d.color)
     # mutate(d.breed)
     # mutate(d.sum_features, d.col_sum)
@@ -521,7 +585,8 @@ def run(d, model, parameters):
         ])
     mutate(d.encode_categorical, ['Type', 'AgeGroup',
                                   'Gender', 'QuantityGroup',
-                                  'MaturitySize', 'FurLength'])
+                                  'MaturitySize', 'FurLength',
+                                  'NameGroup', 'NameLength'])
     mutate(d.drop_ignore)
     print(d.get_df('train').columns)
     score = d.cross_validate(model, parameters)
@@ -595,4 +660,4 @@ d = Data(path + '/input/train/train.csv',
          ignore=cols_to_ignore)
 predictions, score = run(d, model, parameters)
 d.save_predictions(predictions, score, id_col)
-# 0.35923
+# 0.3631
