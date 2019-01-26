@@ -220,14 +220,38 @@ class Clean:
 
 class Engineer:
 
+    def get_top_rescuers(cls, x, top_rescuers):
+        if x in top_rescuers:
+            return x
+        return False
+
+    def rescuer(cls, df):
+        top_rescuers = list(df['RescuerID'].value_counts().index[:5])
+        df['Big_Rescuer'] = df['RescuerID']\
+            .apply(lambda x: cls.get_top_rescuers(x, top_rescuers))
+        return df
+
+    def fee(cls, df):
+        df.loc[df['Fee'] > 0, 'Has_Fee'] = True
+        df.loc[df['Fee'] == 0, 'Has_Fee'] = False
+        return df
+
+    def photo(cls, df):
+        df.loc[df['PhotoAmt'] > 1, 'Has_2Photos'] = True
+        df.loc[df['PhotoAmt'] < 2, 'Has_2Photos'] = False
+        # df.loc[df['VideoAmt'] > 0, 'Has_Video'] = True
+        # df.loc[df['VideoAmt'] == 0, 'Has_Video'] = False
+        return df
+
     def simplify_name_length(cls, x):
         length = len(str(x))
         if length < 3:
             return 'short'
-        if length < 20:
-            return 'medium'
-        if length > 19:
-            return 'long'
+        # if length < 20:
+        #     return 'medium'
+        # if length > 19:
+        #     return 'long'
+        return 'long'
 
     def name_length(cls, df):
         df['NameLength'] = df['Name']\
@@ -265,10 +289,10 @@ class Engineer:
             return 'NAN'
         if x in names['top5']:
             return 'top5'
-        if x in names['top30']:
-            return 'top30'
-        if '&' in x:
-            return 'and'
+        # if x in names['top30']:
+        #     return 'top30'
+        # if '&' in x:
+        #     return 'and'
         if x in names['rest']:
             return 'rest'
 
@@ -294,7 +318,8 @@ class Engineer:
         return categories
 
     def quantity(cls, df):
-        df['QuantityGroup'] = cls.simplify_quantity(df)
+        df.loc[df['Quantity'] == 0, 'Is_Solo'] = True
+        df.loc[df['Quantity'] > 0, 'Is_Solo'] = False
         return df
 
     def gender(cls, df):
@@ -305,8 +330,10 @@ class Engineer:
         return df
 
     def breed(cls, df):
-        df.loc[df['Breed2'] > 0, 'Mixed_Breed'] = True
-        df.loc[df['Breed2'] == 0, 'Mixed_Breed'] = False
+        # df.loc[df['Breed2'] > 0, 'Mixed_Breed'] = True
+        # df.loc[df['Breed2'] == 0, 'Mixed_Breed'] = False
+        df.loc[df['Breed1'] == 307, 'Mixed_Breed'] = True
+        df.loc[df['Breed1'] != 307, 'Mixed_Breed'] = False
         return df
 
     def encode_features(cls, df, cols):
@@ -564,13 +591,16 @@ class Data(Explore, Clean, Engineer, Model):
 def run(d, model, parameters):
     mutate = d.mutate
 
+    mutate(d.rescuer)
     mutate(d.age)
     mutate(d.gender)
     mutate(d.quantity)
-    mutate(d.names)
-    mutate(d.name_length)
-    # mutate(d.color)
-    # mutate(d.breed)
+    # mutate(d.names)
+    # mutate(d.name_length)
+    mutate(d.color)
+    mutate(d.breed)
+    mutate(d.fee)
+    mutate(d.photo)
     # mutate(d.sum_features, d.col_sum)
     mutate(d.combine, [
         # ['Breed1', 'Breed2'],
@@ -581,12 +611,25 @@ def run(d, model, parameters):
     mutate(d.encode_features, [
         # 'RescuerID',
         # 'Name',
-        # 'Color1__Color2__Color3'
+        # 'Color1__Color2__Color3',
+        'Color1',
+        'Color2',
+        # 'State',
+        'FurLength',
+        'Health',
+        'Gender',
+        'AgeGroup',
+        'MaturitySize'
         ])
-    mutate(d.encode_categorical, ['Type', 'AgeGroup',
-                                  'Gender', 'QuantityGroup',
-                                  'MaturitySize', 'FurLength',
-                                  'NameGroup', 'NameLength'])
+    mutate(d.encode_categorical, ['Type',
+                                  'Mixed_Breed',
+                                  'Mixed_Color',
+                                  'Has_Fee',
+                                  'Has_2Photos',
+                                #   'Has_Video',
+                                  'Is_Solo',
+                                  'Big_Rescuer'
+                                  ])
     mutate(d.drop_ignore)
     print(d.get_df('train').columns)
     score = d.cross_validate(model, parameters)
@@ -634,23 +677,24 @@ cols_to_ignore = ['PetID',
                   'Name',
                 #   'Type',
                 #   'Age',
-                #   'Breed1',
-                #   'Breed2',
+                  'Breed1',
+                  'Breed2',
                 #   'Gender',
-                #   'Color1',
-                #   'Color2',
+                  'Color1',
+                  'Color2',
                   'Color3',
                 #   'MaturitySize',
                 #   'FurLength',
                   'Vaccinated',
                   'Dewormed',
                   'Sterilized',
-                  'Health',
+                #   'Health',
                   'Quantity',
                   'Fee',
                   'State',
                   'VideoAmt',
-                  'PhotoAmt'
+                  'PhotoAmt',
+                  'Big_Rescuer_False'
                   ]
 id_col = 'PetID'
 
@@ -660,4 +704,4 @@ d = Data(path + '/input/train/train.csv',
          ignore=cols_to_ignore)
 predictions, score = run(d, model, parameters)
 d.save_predictions(predictions, score, id_col)
-# 0.3631
+# 0.3717
