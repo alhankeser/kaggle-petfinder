@@ -12,11 +12,14 @@ import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
 import seaborn as sns
-from sklearn.linear_model import LogisticRegression
+# from sklearn.linear_model import LogisticRegression
+from sklearn.ensemble import RandomForestClassifier
 from sklearn.preprocessing import LabelEncoder
 from sklearn.model_selection import StratifiedKFold
 from sklearn.preprocessing import StandardScaler
-from sklearn.metrics import accuracy_score
+from imblearn.over_sampling import RandomOverSampler
+# from sklearn.metrics import accuracy_score
+# from sklearn.metrics import confusion_matrix
 import scipy.stats as stats
 import math
 import time
@@ -83,6 +86,17 @@ class Explore:
 
 
 class Clean:
+
+    def sample(cls, df, target_val_sets):
+        if df.name == 'train':
+            for target_val_set in target_val_sets:
+                df_class_0 = df[df[cls.target_col] == target_val_set[0]]
+                count_1 = df[cls.target_col].value_counts()[target_val_set[1]]
+                df_class_0_sampled = df_class_0.sample(count_1,
+                                                       replace='True')
+                df = pd.merge(df.drop(df_class_0.index),
+                              df_class_0_sampled, how='outer')
+        return df
 
     def keep_only_keep(cls, df):
         to_drop = set(df.columns.values) - set(cls.keep)
@@ -336,7 +350,7 @@ class Engineer:
         df.loc[df['Breed1'] != 307, 'Mixed_Breed'] = False
         return df
 
-    def encode_features(cls, df, cols):
+    def numerize_features(cls, df, cols):
         train, test = cls.get_dfs()
         df_combined = pd.concat([train[cols], test[cols]])
         train.drop(cls.target_col, axis=1, inplace=True)
@@ -400,6 +414,87 @@ class Engineer:
 
 class Model:
 
+    def confusion_matrix(cls, rater_a, rater_b,
+                         min_rating=None, max_rating=None):
+        """
+        https://github.com/benhamner/Metrics/blob/master/Python/ml_metrics/quadratic_weighted_kappa.py
+        Returns the confusion matrix between rater's ratings
+        """
+        assert(len(rater_a) == len(rater_b))
+        if min_rating is None:
+            min_rating = min(rater_a + rater_b)
+        if max_rating is None:
+            max_rating = max(rater_a + rater_b)
+        num_ratings = int(max_rating - min_rating + 1)
+        conf_mat = [[0 for i in range(num_ratings)]
+                    for j in range(num_ratings)]
+        for a, b in zip(rater_a, rater_b):
+            conf_mat[a - min_rating][b - min_rating] += 1
+        return conf_mat
+
+    def histogram(cls, ratings, min_rating=None, max_rating=None):
+        """
+        https://github.com/benhamner/Metrics/blob/master/Python/ml_metrics/quadratic_weighted_kappa.py
+        Returns the counts of each type of rating that a rater made
+        """
+        if min_rating is None:
+            min_rating = min(ratings)
+        if max_rating is None:
+            max_rating = max(ratings)
+        num_ratings = int(max_rating - min_rating + 1)
+        hist_ratings = [0 for x in range(num_ratings)]
+        for r in ratings:
+            hist_ratings[r - min_rating] += 1
+        return hist_ratings
+
+    def quadratic_weighted_kappa(cls, rater_a, rater_b,
+                                 min_rating=None, max_rating=None):
+        """
+        https://github.com/benhamner/Metrics/blob/master/Python/ml_metrics/quadratic_weighted_kappa.py
+        Calculates the quadratic weighted kappa
+        quadratic_weighted_kappa calculates the quadratic weighted kappa
+        value, which is a measure of inter-rater agreement between two raters
+        that provide discrete numeric ratings.  Potential values range from -1
+        (representing complete disagreement) to 1 (representing complete
+        agreement).  A kappa value of 0 is expected if all agreement is due to
+        chance.
+        quadratic_weighted_kappa(rater_a, rater_b), where rater_a and rater_b
+        each correspond to a list of integer ratings.  These lists must have the
+        same length.
+        The ratings should be integers, and it is assumed that they contain
+        the complete range of possible ratings.
+        quadratic_weighted_kappa(X, min_rating, max_rating), where min_rating
+        is the minimum possible rating, and max_rating is the maximum possible
+        rating
+        """
+        rater_a = np.array(rater_a, dtype=int)
+        rater_b = np.array(rater_b, dtype=int)
+        assert(len(rater_a) == len(rater_b))
+        if min_rating is None:
+            min_rating = min(min(rater_a), min(rater_b))
+        if max_rating is None:
+            max_rating = max(max(rater_a), max(rater_b))
+        conf_mat = cls.confusion_matrix(rater_a, rater_b,
+                                    min_rating, max_rating)
+        num_ratings = len(conf_mat)
+        num_scored_items = float(len(rater_a))
+
+        hist_rater_a = cls.histogram(rater_a, min_rating, max_rating)
+        hist_rater_b = cls.histogram(rater_b, min_rating, max_rating)
+
+        numerator = 0.0
+        denominator = 0.0
+
+        for i in range(num_ratings):
+            for j in range(num_ratings):
+                expected_count = (hist_rater_a[i] * hist_rater_b[j]
+                                  / num_scored_items)
+                d = pow(i - j, 2.0) / pow(num_ratings - 1, 2.0)
+                numerator += d * conf_mat[i][j] / num_scored_items
+                denominator += d * expected_count / num_scored_items
+
+        return 1.0 - numerator / denominator
+
     def fix_shape(cls, df):
         df_name = df.name
         if df_name == 'train':
@@ -431,7 +526,7 @@ class Model:
             cv_model = model(**parameters)
             cv_model.fit(X_train, y_train)
             X_predictions = cv_model.predict(X_test)
-            score = accuracy_score(y_test, X_predictions)
+            score = cls.quadratic_weighted_kappa(y_test, X_predictions, 0, 4)
             scores = np.append(scores, score)
         score = np.round(scores.mean(), decimals=5)
         return score
@@ -590,55 +685,42 @@ class Data(Explore, Clean, Engineer, Model):
 
 def run(d, model, parameters):
     mutate = d.mutate
-
-    mutate(d.rescuer)
-    mutate(d.age)
-    mutate(d.gender)
+    mutate(d.sample, [[0, 3], [1, 3], [2, 3], [4, 3]])
+    # print(d.get_df('train')['AdoptionSpeed'].value_counts())
+    # mutate(d.rescuer)
+    # mutate(d.age)
+    # mutate(d.gender)
     mutate(d.quantity)
     # mutate(d.names)
     # mutate(d.name_length)
-    mutate(d.color)
-    mutate(d.breed)
-    mutate(d.fee)
-    mutate(d.photo)
+    # mutate(d.color)
+    # mutate(d.breed)
+    # mutate(d.fee)
+    # mutate(d.photo)
     # mutate(d.sum_features, d.col_sum)
     mutate(d.combine, [
         # ['Breed1', 'Breed2'],
-        # ['Color1', 'Color2', 'Color3']
+        # ['Color1', 'Color2']
         ])
-    # mutate(d.keep_only_keep)
     # mutate(d.fill_na)
-    mutate(d.encode_features, [
-        # 'RescuerID',
-        # 'Name',
-        # 'Color1__Color2__Color3',
-        'Color1',
-        'Color2',
-        # 'State',
-        'FurLength',
-        'Health',
-        'Gender',
-        'AgeGroup',
-        'MaturitySize'
-        ])
-    mutate(d.encode_categorical, ['Type',
-                                  'Mixed_Breed',
-                                  'Mixed_Color',
-                                  'Has_Fee',
-                                  'Has_2Photos',
-                                #   'Has_Video',
-                                  'Is_Solo',
-                                  'Big_Rescuer'
-                                  ])
+    mutate(d.numerize_features, [
+        #    'Breed1',
+        #    'Color1__Color2'
+           ])
+    mutate(d.encode_categorical, [
+           'Type',
+        #    'AgeGroup',
+        #    'NameLength',
+           'Is_Solo',
+        #    'Has_2Photos',
+           ])
     mutate(d.drop_ignore)
-    print(d.get_df('train').columns)
     score = d.cross_validate(model, parameters)
-    print(score)
+    print('Score: ', score)
+    print(d.get_df('train').head(2))
     model = d.fit(model, parameters)
     predictions = d.predict(model)
     d.print_log()
-    train = d.get_df('train')
-    print(train.head(2))
     return (predictions, score)
 
 
@@ -669,32 +751,33 @@ if len(zip_files) > 0:
         unzip(file)
     move_zips(path + '/input/', path + '/input/source_zips/')
 
-model = LogisticRegression
-parameters = {}
+model = RandomForestClassifier
+parameters = {
+    'n_estimators': 100,
+}
 cols_to_ignore = ['PetID',
                   'RescuerID',
                   'Description',
                   'Name',
                 #   'Type',
-                #   'Age',
+                  'Age',
                   'Breed1',
                   'Breed2',
                 #   'Gender',
                   'Color1',
                   'Color2',
                   'Color3',
-                #   'MaturitySize',
+                  'MaturitySize',
                 #   'FurLength',
                   'Vaccinated',
                   'Dewormed',
                   'Sterilized',
-                #   'Health',
+                  'Health',
                   'Quantity',
                   'Fee',
                   'State',
                   'VideoAmt',
-                  'PhotoAmt',
-                  'Big_Rescuer_False'
+                  'PhotoAmt'
                   ]
 id_col = 'PetID'
 
