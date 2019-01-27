@@ -87,13 +87,27 @@ class Explore:
 
 class Clean:
 
+    def sample_ros(cls, df):
+        if df.name == 'train':
+            X = df.drop(cls.target_col, axis=1)
+            y = df[cls.target_col]
+            ros = RandomOverSampler(sampling_strategy='minority',
+                                    random_state=1)
+            X_ros, y_ros = ros.fit_sample(X, y)
+            df = pd.DataFrame(list(X_ros),
+                              columns=df.drop(cls.target_col, axis=1)
+                              .columns)
+            df[cls.target_col] = list(y_ros)
+        return df
+
     def sample(cls, df, target_val_sets):
         if df.name == 'train':
             for target_val_set in target_val_sets:
                 df_class_0 = df[df[cls.target_col] == target_val_set[0]]
                 count_1 = df[cls.target_col].value_counts()[target_val_set[1]]
                 df_class_0_sampled = df_class_0.sample(count_1,
-                                                       replace='True')
+                                                       replace='True',
+                                                       random_state=1)
                 df = pd.merge(df.drop(df_class_0.index),
                               df_class_0_sampled, how='outer')
         return df
@@ -517,7 +531,7 @@ class Model:
             cls.mutate(cls.fix_shape)
             train = cls.get_df('train')
         scores = np.array([])
-        skf = StratifiedKFold(n_splits=10, random_state=101)
+        skf = StratifiedKFold(n_splits=10, random_state=1, shuffle=True)
         X = train.drop(columns=[cls.target_col])
         y = train[cls.target_col]
         for train_index, test_index in skf.split(X, y):
@@ -685,12 +699,13 @@ class Data(Explore, Clean, Engineer, Model):
 
 def run(d, model, parameters):
     mutate = d.mutate
-    mutate(d.sample, [[0, 3], [1, 3], [2, 3], [4, 3]])
+    # mutate(d.sample, [[0, 1]])
+    # mutate(d.sample_ros)
     # print(d.get_df('train')['AdoptionSpeed'].value_counts())
     # mutate(d.rescuer)
     # mutate(d.age)
     # mutate(d.gender)
-    mutate(d.quantity)
+    # mutate(d.quantity)
     # mutate(d.names)
     # mutate(d.name_length)
     # mutate(d.color)
@@ -711,7 +726,7 @@ def run(d, model, parameters):
            'Type',
         #    'AgeGroup',
         #    'NameLength',
-           'Is_Solo',
+        #    'Is_Solo',
         #    'Has_2Photos',
            ])
     mutate(d.drop_ignore)
@@ -763,12 +778,12 @@ cols_to_ignore = ['PetID',
                   'Age',
                   'Breed1',
                   'Breed2',
-                #   'Gender',
+                  'Gender',
                   'Color1',
                   'Color2',
                   'Color3',
                   'MaturitySize',
-                #   'FurLength',
+                  'FurLength',
                   'Vaccinated',
                   'Dewormed',
                   'Sterilized',
@@ -787,4 +802,3 @@ d = Data(path + '/input/train/train.csv',
          ignore=cols_to_ignore)
 predictions, score = run(d, model, parameters)
 d.save_predictions(predictions, score, id_col)
-# 0.3717
