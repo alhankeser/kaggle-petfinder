@@ -18,6 +18,9 @@ from sklearn.preprocessing import LabelEncoder
 from sklearn.model_selection import StratifiedKFold
 from sklearn.preprocessing import StandardScaler
 from imblearn.over_sampling import RandomOverSampler
+from sklearn.model_selection import train_test_split
+from mlxtend.feature_selection import SequentialFeatureSelector as sfs
+from sklearn.metrics import make_scorer
 # from sklearn.metrics import accuracy_score
 # from sklearn.metrics import confusion_matrix
 import scipy.stats as stats
@@ -28,6 +31,8 @@ import warnings
 import os
 import zipfile
 import shutil
+import sys
+import json
 
 # Options
 pd.set_option('display.max_columns', 100)
@@ -248,6 +253,100 @@ class Clean:
 
 class Engineer:
 
+    def get_image_data(cls, json_path):
+        image_data = False
+        if os.path.isfile(json_path):
+            with open(json_path) as f:
+                try:
+                    image_data = pd.DataFrame(
+                        json.load(f)['labelAnnotations'])
+                except Exception:
+                    pass
+        return image_data
+
+    def calculate_photo_scores(cls, df, x, match='exact',
+                               start=1, stop=2):
+        try:
+            pet_id = x
+            pet_type = df[df['PetID'] == pet_id]['Type'].values[0]
+            pet_type_dict = {1: 'dog', 2: 'cat'}
+            pet_type = pet_type_dict[pet_type]
+            scores = []
+            score = 0
+            i = start
+            while (i > 0) & (i < stop):
+                json_path = path + '/input/train_metadata/'\
+                            + pet_id + '-' + str(i) + '.json'
+                image_data = cls.get_image_data(json_path)
+                try:
+                    if match == 'exact':
+                        scores.append(
+                            image_data[image_data['description'] ==
+                                    pet_type]['score'].values[0])
+                except Exception:
+                    scores.append(.0)
+                    break
+                i += 1
+            try:
+                score = np.array(scores)
+            except Exception:
+                pass
+        except Exception:
+            print('########## calculate_photo_scores') 
+            print(pet_id)
+        return score
+
+    def rate_first_photo(cls, x):
+        try:
+            score = x['AllPhotoScores'][0]
+        except Exception:
+            return 'Not Great'
+        pet_type = x['Type']
+        if pet_type == 1:
+            good_threshold = 0.96
+        if pet_type == 2:
+            good_threshold = 0.99
+        if score > good_threshold:
+            return 'Good'
+        if (score < good_threshold) & (score > .5):
+            return 'Okay'
+        return 'Not Great'
+
+    def rate_secondary_good_photos(cls, x):
+        count = 0
+        pet_type = x['Type']
+        scores = x['AllPhotoScores']
+        if pet_type == 1:
+            good_threshold = 0.96
+        if pet_type == 2:
+            good_threshold = 0.99
+        try:
+            scores = scores[1:]
+            count = len(scores[scores > good_threshold])
+        except Exception:
+            pass
+        if count > 2:
+            return 'Good'
+        if count > 0:
+            return 'Okay'
+        return 'Not Great'
+
+    def get_photo_scores(cls, df):
+        try:
+            df['AllPhotoScores'] = df['PetID']\
+                .apply(lambda x:
+                       cls.calculate_photo_scores(df,
+                                                  x, match='exact',
+                                                  start=1, stop=99))
+            df['FirstPhotoScore'] = df[['Type', 'AllPhotoScores']]\
+                .apply(lambda x: cls.rate_first_photo(x), axis=1)
+            df['SecondaryPhotoScore'] = df[['AllPhotoScores', 'Type']]\
+                .apply(lambda x: cls.rate_secondary_good_photos(x), axis=1)
+        except Exception:
+            print('########## get_photo_scores')
+            print(df.head())
+        return df
+
     def get_top_rescuers(cls, x, top_rescuers):
         if x in top_rescuers:
             return x
@@ -428,6 +527,29 @@ class Engineer:
 
 class Model:
 
+    def forward_selection(cls, df, features_count=1):
+        if df.name == 'train':
+            qwk_scorer = make_scorer(cls.quadratic_weighted_kappa,
+                                     greater_is_better=True)
+            model = RandomForestClassifier(n_estimators=100, n_jobs=-1)
+            X = df.drop('AdoptionSpeed', axis=1)
+            y = df['AdoptionSpeed']
+            X_train, X_test,\
+                y_train, y_test = train_test_split(X, y, test_size=0.25,
+                                                   random_state=42)
+            y_train = y_train.ravel()
+            y_test = y_test.ravel()
+            sfs1 = sfs(model,
+                       k_features=3,
+                       forward=True,
+                       floating=False,
+                       verbose=2,
+                       scoring=qwk_scorer,
+                       cv=5)
+            sfs1 = sfs1.fit(X_train, y_train)
+            best_cols = list(sfs1.k_feature_idx_)
+        return best_cols
+
     def confusion_matrix(cls, rater_a, rater_b,
                          min_rating=None, max_rating=None):
         """
@@ -462,7 +584,7 @@ class Model:
         return hist_ratings
 
     def quadratic_weighted_kappa(cls, rater_a, rater_b,
-                                 min_rating=None, max_rating=None):
+                                 min_rating=0, max_rating=4):
         """
         https://github.com/benhamner/Metrics/blob/master/Python/ml_metrics/quadratic_weighted_kappa.py
         Calculates the quadratic weighted kappa
@@ -702,6 +824,7 @@ def run(d, model, parameters):
     # mutate(d.sample, [[0, 1]])
     # mutate(d.sample_ros)
     # print(d.get_df('train')['AdoptionSpeed'].value_counts())
+    mutate(d.get_photo_scores)
     # mutate(d.rescuer)
     # mutate(d.age)
     # mutate(d.gender)
@@ -728,8 +851,13 @@ def run(d, model, parameters):
         #    'NameLength',
         #    'Is_Solo',
         #    'Has_2Photos',
+        'FirstPhotoScore',
+        'SecondaryPhotoScore'
            ])
     mutate(d.drop_ignore)
+    # best_features = d.forward_selection(d.get_df('train'), 5)
+    # print('Best Features', best_features)
+    # sys.exit()
     score = d.cross_validate(model, parameters)
     print('Score: ', score)
     print(d.get_df('train').head(2))
@@ -792,10 +920,11 @@ cols_to_ignore = ['PetID',
                   'Fee',
                   'State',
                   'VideoAmt',
-                  'PhotoAmt'
+                  'PhotoAmt',
+                  # Custom:
+                  'AllPhotoScores',
                   ]
 id_col = 'PetID'
-
 d = Data(path + '/input/train/train.csv',
          path + '/input/test/test.csv',
          'AdoptionSpeed',
