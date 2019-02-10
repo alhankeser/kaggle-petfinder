@@ -31,7 +31,7 @@ import warnings
 import os
 import zipfile
 import shutil
-import sys
+# import sys
 import json
 
 # Options
@@ -253,98 +253,99 @@ class Clean:
 
 class Engineer:
 
-    def get_image_data(cls, json_path):
-        image_data = False
-        if os.path.isfile(json_path):
-            with open(json_path) as f:
-                try:
-                    image_data = pd.DataFrame(
-                        json.load(f)['labelAnnotations'])
-                except Exception:
-                    pass
-        return image_data
+    def matches_df(cls, df, images_df):
+        return len(set(images_df['PetID'].unique()) -
+                   set(df['PetID'].unique())) == 0
 
-    def calculate_photo_scores(cls, df, x, match='exact',
-                               start=1, stop=2):
-        try:
-            pet_id = x
-            pet_type = df[df['PetID'] == pet_id]['Type'].values[0]
-            pet_type_dict = {1: 'dog', 2: 'cat'}
-            pet_type = pet_type_dict[pet_type]
-            scores = []
-            score = 0
-            i = start
-            while (i > 0) & (i < stop):
-                json_path = path + '/input/train_metadata/'\
-                            + pet_id + '-' + str(i) + '.json'
-                image_data = cls.get_image_data(json_path)
+    def create_image_df(cls, df, images_df_file_name):
+        print('Building new image data csv...', df.name)
+        json_folder_path = path + '/input/' + df.name + '_metadata/'
+        json_files = [f_name for f_name in os.listdir(json_folder_path)
+                      if f_name.endswith('.json')]
+        pet_type_dict = {1: 'dog', 2: 'cat'}
+        all_images_list = []
+        for index, f_name in enumerate(json_files):
+            with open(os.path.join(json_folder_path, f_name)) as json_file:
+                json_text = json.load(json_file)
                 try:
-                    if match == 'exact':
-                        scores.append(
-                            image_data[image_data['description'] ==
-                                    pet_type]['score'].values[0])
+                    label_annotations = json_text['labelAnnotations']
                 except Exception:
-                    scores.append(.0)
-                    break
-                i += 1
-            try:
-                score = np.array(scores)
-            except Exception:
-                pass
-        except Exception:
-            print('########## calculate_photo_scores') 
-            print(pet_id)
-        return score
+                    continue
+                image_data = pd.DataFrame(label_annotations)\
+                    .drop(['mid', 'topicality'], axis=1)\
+                    .rename({'description': 'Description',
+                            'score': 'Score'},
+                            axis=1)
+                pet_id = f_name.split('-')[0]
+                image_data['PetID'] = pet_id
+                image_data['ImageID'] = int(f_name.split('-')[1].split('.')[0])
+                image_data['PetLabel'] = pet_type_dict[
+                    df[df['PetID'] == pet_id]['Type'].values[0]]
+                if df.name == 'train':
+                    image_data['AdoptionSpeed'] = \
+                        df[df['PetID'] == pet_id]['AdoptionSpeed']
+            all_images_list.append(image_data)
+        images_df = pd.concat(all_images_list)
+        images_df.to_csv(images_df_file_name, index=False)
+        return images_df
 
-    def rate_first_photo(cls, x):
+    def get_image_data(cls, df, force_csv=False):
+        images_df_file_name = path + '/' + df.name + '_image_data.csv'
         try:
-            score = x['AllPhotoScores'][0]
+            images_df = pd.read_csv(images_df_file_name)
+            no_file = False
         except Exception:
-            return 'Not Great'
-        pet_type = x['Type']
-        if pet_type == 1:
+            no_file = True
+        if no_file or force_csv or not cls.matches_df(df, images_df):
+            images_df = cls.create_image_df(df, images_df_file_name)
+        return images_df
+
+    def rate_image(cls, x):
+        pet_label = x['PetLabel']
+        score = x['Score']
+        if pet_label == 'dog':
             good_threshold = 0.96
-        if pet_type == 2:
+        if pet_label == 'cat':
             good_threshold = 0.99
         if score > good_threshold:
-            return 'Good'
-        if (score < good_threshold) & (score > .5):
-            return 'Okay'
-        return 'Not Great'
+            return 2
+        return 1
 
-    def rate_secondary_good_photos(cls, x):
-        count = 0
-        pet_type = x['Type']
-        scores = x['AllPhotoScores']
-        if pet_type == 1:
-            good_threshold = 0.96
-        if pet_type == 2:
-            good_threshold = 0.99
-        try:
-            scores = scores[1:]
-            count = len(scores[scores > good_threshold])
-        except Exception:
-            pass
-        if count > 2:
-            return 'Good'
-        if count > 0:
-            return 'Okay'
-        return 'Not Great'
+    def cap_max_image_rating(cls, x):
+        if x > 2:
+            return 2
+        return x
 
-    def get_photo_scores(cls, df):
-        try:
-            df['AllPhotoScores'] = df['PetID']\
-                .apply(lambda x:
-                       cls.calculate_photo_scores(df,
-                                                  x, match='exact',
-                                                  start=1, stop=99))
-            df['FirstPhotoScore'] = df[['Type', 'AllPhotoScores']]\
-                .apply(lambda x: cls.rate_first_photo(x), axis=1)
-            df['SecondaryPhotoScore'] = df[['AllPhotoScores', 'Type']]\
-                .apply(lambda x: cls.rate_secondary_good_photos(x), axis=1)
-        except Exception:
-            print('########## get_photo_scores')
-            print(df.head())
+    def append_image_data(cls, df):
+        images_df = cls.get_image_data(df)
+        images = images_df[(images_df['PetLabel'] ==
+                            images_df['Description'])][
+                            ['PetID', 'Score', 'PetLabel', 'ImageID']]
+        images['ImageRating'] = images[['PetLabel', 'Score']]\
+            .apply(lambda x: cls.rate_image(x), axis=1)
+        first = images[images['ImageID'] == 1][['PetID', 'ImageRating']]
+        first.rename({'ImageRating': 'FirstImageRating'},
+                     axis=1, inplace=True)
+        seconds = images[(images['ImageID'] > 1) &
+                         (images['ImageRating'] > 1)]\
+            .groupby('PetID')['ImageRating'].count().reset_index()
+        seconds.rename({'ImageRating': 'SecondImageRating'},
+                       axis=1, inplace=True)
+        seconds['SecondImageRating'] = seconds['SecondImageRating']\
+            .apply(lambda x: cls.cap_max_image_rating(x))
+        image_ratings = pd.merge(first, seconds, on='PetID', how='left')
+        df = pd.merge(df, image_ratings[['PetID', 'FirstImageRating',
+                                        'SecondImageRating']],
+                      on='PetID', how='left')
+        df['FirstImageRating'].fillna(0, inplace=True)
+        df['SecondImageRating'].fillna(0, inplace=True)
+        df['TotalImageRating'] = df['FirstImageRating'] +\
+            (df['SecondImageRating'] * .1)
+        df.loc[df['TotalImageRating'] == 1.0, 'TotalImageRating'] = 0.0
+        df.loc[(df['TotalImageRating'] == 1.2) |
+               (df['TotalImageRating'] == 1.1), 'TotalImageRating'] = 1.0
+        df.loc[df['TotalImageRating'] == 2.1, 'TotalImageRating'] = 2.0
+        df.loc[df['TotalImageRating'] == 2.2, 'TotalImageRating'] = 3.0
         return df
 
     def get_top_rescuers(cls, x, top_rescuers):
@@ -445,8 +446,8 @@ class Engineer:
         return categories
 
     def quantity(cls, df):
-        df.loc[df['Quantity'] == 0, 'Is_Solo'] = True
-        df.loc[df['Quantity'] > 0, 'Is_Solo'] = False
+        df.loc[df['Quantity'] == 0, 'Quantity'] = 1
+        df.loc[df['Quantity'] > 0, 'Quantity'] = 2
         return df
 
     def gender(cls, df):
@@ -673,6 +674,9 @@ class Model:
         y = train[cls.target_col]
         model = model(**parameters)
         model.fit(X, y)
+        importances = model.feature_importances_
+        for col, importance in zip(X.columns.values, importances):
+            print(col, importance)
         return model
 
     def predict(cls, model):
@@ -822,9 +826,9 @@ class Data(Explore, Clean, Engineer, Model):
 def run(d, model, parameters):
     mutate = d.mutate
     # mutate(d.sample, [[0, 1]])
-    # mutate(d.sample_ros)
     # print(d.get_df('train')['AdoptionSpeed'].value_counts())
-    mutate(d.get_photo_scores)
+    mutate(d.append_image_data)
+    mutate(d.sample_ros)
     # mutate(d.rescuer)
     # mutate(d.age)
     # mutate(d.gender)
@@ -836,25 +840,24 @@ def run(d, model, parameters):
     # mutate(d.fee)
     # mutate(d.photo)
     # mutate(d.sum_features, d.col_sum)
-    mutate(d.combine, [
-        # ['Breed1', 'Breed2'],
-        # ['Color1', 'Color2']
-        ])
+    # mutate(d.combine, [
+    #     # ['Breed1', 'Breed2'],
+    #     ['Color1', 'Color2']
+    #     ])
     # mutate(d.fill_na)
-    mutate(d.numerize_features, [
-        #    'Breed1',
-        #    'Color1__Color2'
-           ])
-    mutate(d.encode_categorical, [
-           'Type',
-        #    'AgeGroup',
-        #    'NameLength',
-        #    'Is_Solo',
-        #    'Has_2Photos',
-        'FirstPhotoScore',
-        'SecondaryPhotoScore'
-           ])
+    # mutate(d.numerize_features, [
+    # #     #    'Breed1',
+    #     #    'Color1__Color2'
+    #         # 'Type'
+    #        ])
+    # mutate(d.encode_categorical, [
+    #        'AgeGroup',
+    #     #    'NameLength',
+    #     #    'Is_Solo',
+    #     #    'Has_2Photos',
+    #        ])
     mutate(d.drop_ignore)
+    print(d.get_df('train').columns)
     # best_features = d.forward_selection(d.get_df('train'), 5)
     # print('Best Features', best_features)
     # sys.exit()
@@ -897,32 +900,35 @@ if len(zip_files) > 0:
 model = RandomForestClassifier
 parameters = {
     'n_estimators': 100,
+    'min_samples_split': 50
 }
 cols_to_ignore = ['PetID',
                   'RescuerID',
                   'Description',
                   'Name',
-                #   'Type',
-                  'Age',
-                  'Breed1',
-                  'Breed2',
+                  'Type',
+                #   'Age',
+                #   'Breed1',
+                #   'Breed2',
                   'Gender',
-                  'Color1',
-                  'Color2',
+                #   'Color1',
+                #   'Color2',
                   'Color3',
                   'MaturitySize',
-                  'FurLength',
+                #   'FurLength',
                   'Vaccinated',
                   'Dewormed',
                   'Sterilized',
                   'Health',
                   'Quantity',
                   'Fee',
-                  'State',
+                #   'State',
                   'VideoAmt',
-                  'PhotoAmt',
+                #   'PhotoAmt',
                   # Custom:
-                  'AllPhotoScores',
+                #   'FirstImageRating',
+                  'SecondImageRating',
+                  'TotalImageRating'
                   ]
 id_col = 'PetID'
 d = Data(path + '/input/train/train.csv',
